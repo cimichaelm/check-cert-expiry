@@ -16,10 +16,16 @@ def check_ssl_validity_hostname(cert, hostname):
     ''' Return True if valid. False is invalid '''
     if cert.has_key('subjectAltName'):
         for typ, val in cert['subjectAltName']:
-            if typ == 'DNS' and val == hostname:
+            # Wilcard
+            if typ == 'DNS' and val.startswith('*'):
+                if val[2:] == hostname.split('.',1)[1]:
+                    return True
+            # Normal hostnames
+            elif typ == 'DNS' and val == hostname:
                 return True
     else:
         return False
+
 
 
 def check_ssl_expiration(cert):
