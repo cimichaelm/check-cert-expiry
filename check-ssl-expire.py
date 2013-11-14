@@ -4,15 +4,24 @@
 __author__ = "Adrien Pujol - http://www.crashdump.fr/"
 __copyright__ = "Copyright 2013, Adrien Pujol"
 __license__ = "Mozilla Public License"
-__version__ = "0.2"
+__version__ = "0.3"
 __email__ = "adrien.pujol@crashdump.fr"
 __status__ = "Development"
 __doc__ = "Check a TLS certificate validity."
 
 import argparse
 import socket
-import ssl
 from datetime import datetime
+import time
+try:
+    # Try to load pyOpenSSL first
+    # aptitude install python-dev && pip install pyopenssl
+    from OpenSSL import SSL
+    PYOPENSSL = True
+except ImportError:
+    # Else, fallback on standard ssl lib (doesn't support SNI)
+    import ssl
+    PYOPENSSL = False
 
 CA_CERTS = "/etc/ssl/certs/ca-certificates.crt"
 
@@ -22,7 +31,34 @@ def exit_error(errcode, errtext):
     exit(errcode)
 
 
-def check_ssl_validity_hostname(cert, hostname):
+def pyopenssl_check_callback(connection, x509, errnum, errdepth, ok):
+    ''' callback for pyopenssl ssl check'''
+    if x509.get_subject().commonName == HOST:
+        if x509.has_expired():
+            exit_error(1, 'Error: Certificate has expired!')
+        else:
+            print pyopenssl_check_expiration(x509.get_notAfter())
+
+    if not ok:
+        return False
+    return ok
+
+
+def pyopenssl_check_expiration(asn1):
+    ''' Return the numbers of day before expiration. False if expired.'''
+    try:
+        expire_date = datetime.strptime(asn1, "%Y%m%d%H%M%SZ")
+    except:
+        exit_error(1, 'Certificate date format unknow.')
+
+    expire_in = expire_date - datetime.now()
+    if expire_in.days > 0:
+        return expire_in.days
+    else:
+        return False
+
+
+def pyssl_check_hostname(cert, hostname):
     ''' Return True if valid. False is invalid '''
     if 'subjectAltName' in cert:
         for typ, val in cert['subjectAltName']:
@@ -37,7 +73,7 @@ def check_ssl_validity_hostname(cert, hostname):
         return False
 
 
-def check_ssl_expiration(cert):
+def pyssl_check_expiration(cert):
     ''' Return the numbers of day before expiration. False if expired. '''
     if 'notAfter' in cert:
         try:
@@ -59,31 +95,62 @@ def main():
                         type=int, default=443)
     args = parser.parse_args()
 
+    global HOST, PORT
+    HOST = args.host
+    PORT = args.port
+
     # Check the DNS name
     try:
-        socket.getaddrinfo(args.host, args.port)[0][4][0]
+        socket.getaddrinfo(HOST, PORT)[0][4][0]
     except socket.gaierror as e:
         exit_error(1, e)
 
     # Connect to the host and get the certificate
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    ssl_sock = ssl.wrap_socket(sock, cert_reqs=ssl.CERT_REQUIRED,
-                               ca_certs=CA_CERTS,
-                               ciphers="HIGH:-aNULL:-eNULL:-PSK:RC4-SHA:RC4-MD5")
+    sock.connect((HOST, PORT))
 
-    try:
-        ssl_sock.connect((args.host, args.port))
-    except ssl.SSLError as e:
-        exit_error(1, e)
+    # If handled by python SSL library
+    if not PYOPENSSL:
+        try:
+            ssl_sock = ssl.wrap_socket(sock, cert_reqs=ssl.CERT_REQUIRED,
+                                       ca_certs=CA_CERTS,
+                                       ciphers=("HIGH:-aNULL:-eNULL:"
+                                                "-PSK:RC4-SHA:RC4-MD5"))
 
-    cert = ssl_sock.getpeercert()
+            cert = ssl_sock.getpeercert()
+            if not pyssl_check_hostname(cert, HOST):
+                print 'Error: Hostname does not match!'
 
-    if not check_ssl_validity_hostname(cert, args.host):
-        print 'Error: Hostname does not match!'
+            print pyssl_check_expiration(cert)
 
-    print check_ssl_expiration(cert)
+            sock = ssl_sock.unwrap()
 
-    sock = ssl_sock.unwrap()
+        except ssl.SSLError as e:
+            exit_error(1, e)
+
+    # If handled by pyOpenSSL module
+    else:
+        try:
+            ctx = SSL.Context(SSL.TLSv1_METHOD)
+            ctx.set_verify(SSL.VERIFY_PEER | SSL.VERIFY_FAIL_IF_NO_PEER_CERT,
+                           pyopenssl_check_callback)
+            ctx.load_verify_locations(CA_CERTS)
+
+            ssl_sock = SSL.Connection(ctx, sock)
+            ssl_sock.set_connect_state()
+            ssl_sock.set_tlsext_host_name(HOST)
+            ssl_sock.do_handshake()
+
+            x509 = ssl_sock.get_peer_certificate()
+            x509name = x509.get_subject()
+            if x509name.commonName != HOST:
+                print 'Error: Hostname does not match!'
+
+            ssl_sock.shutdown()
+
+        except SSL.Error as e:
+            exit_error(1, e)
+
     sock.close()
 
 
