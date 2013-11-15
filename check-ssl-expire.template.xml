@@ -75,7 +75,7 @@
     </templates>
     <triggers>
         <trigger>
-            <expression>{Template External Check - SSL Cert Expire:check-ssl-expire.py[&quot;{HOST.NAME}&quot;].last(0)}&lt;0</expression>
+            <expression>{Template External Check - SSL Cert Expire:check-ssl-expire.py[&quot;{HOST.NAME}&quot;].last(0)}&lt;1</expression>
             <name>SSL certificate on {HOSTNAME} expired</name>
             <url/>
             <status>0</status>
